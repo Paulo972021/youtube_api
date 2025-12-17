@@ -56,7 +56,7 @@ async def health():
 @app.get("/download")
 async def download_video(
     url: str,
-    x_api_key: Optional[str] = Header(default=None, convert_underscores=False),
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ):
     """
     Exemplo:
