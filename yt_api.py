@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import asyncio
 from typing import Optional
@@ -8,14 +9,29 @@ from fastapi.responses import FileResponse
 
 import yt_dlp
 
-app = FastAPI(title="YT Download API", version="1.0.1")
+app = FastAPI(title="YT Download API", version="1.0.3")
 
 
-# =========================
-# Helpers
-# =========================
+def _prepare_cookiefile_writable() -> Optional[str]:
+    """
+    Se YTDLP_COOKIES_PATH estiver definido, copia o cookies.txt (read-only no Render)
+    para um arquivo em /tmp (gravável) e retorna o caminho novo.
+    """
+    src = (os.getenv("YTDLP_COOKIES_PATH") or "").strip()
+    if not src:
+        return None
+    if not os.path.exists(src):
+        raise FileNotFoundError(f"Cookie file not found at {src}")
+
+    os.makedirs("/tmp", exist_ok=True)
+    dst = os.path.join("/tmp", f"cookies_{os.getpid()}.txt")
+    shutil.copyfile(src, dst)
+    return dst
+
+
 def _download_sync(url: str, tmpdir: str) -> str:
-    cookies_path = (os.getenv("YTDLP_COOKIES_PATH") or "").strip()
+    proxy = (os.getenv("YTDLP_PROXY") or "").strip()
+    cookiefile = _prepare_cookiefile_writable()
 
     ydl_opts = {
         "format": "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
@@ -26,40 +42,35 @@ def _download_sync(url: str, tmpdir: str) -> str:
         "noplaylist": True,
     }
 
-    # ✅ cookies (se você estiver usando)
-    if cookies_path:
-        ydl_opts["cookiefile"] = cookies_path
+    if cookiefile:
+        ydl_opts["cookiefile"] = cookiefile
 
-    # ✅ proxy (coloque exatamente aqui)
-    proxy = (os.getenv("YTDLP_PROXY") or "").strip()
     if proxy:
         ydl_opts["proxy"] = proxy
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-
-    return filename
-
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+        return filename
+    finally:
+        # limpa a cópia gravável do cookie (boa prática)
+        if cookiefile and os.path.exists(cookiefile):
+            try:
+                os.remove(cookiefile)
+            except Exception:
+                pass
 
 
 def _check_api_key(value: Optional[str]) -> None:
-    """
-    Se API_KEY estiver definida no ambiente (Render -> Environment),
-    exige header X-API-Key. Faz strip() para evitar erro por espaços.
-    """
     required = (os.getenv("API_KEY") or "").strip()
     if not required:
-        return  # sem API_KEY definida, não bloqueia
-
+        return
     got = (value or "").strip()
     if got != required:
         raise HTTPException(status_code=401, detail="Unauthorized (invalid API key).")
 
 
-# =========================
-# Routes
-# =========================
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -68,16 +79,18 @@ async def health():
 @app.get("/debug-key")
 async def debug_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
     required = (os.getenv("API_KEY") or "")
+    cookies_path = (os.getenv("YTDLP_COOKIES_PATH") or "").strip()
+    proxy = (os.getenv("YTDLP_PROXY") or "").strip()
     return {
         "received": x_api_key is not None,
         "received_len": 0 if not x_api_key else len(x_api_key),
         "required_is_set": required.strip() != "",
         "required_len": 0 if not required else len(required.strip()),
-        "cookies_path": (os.getenv("YTDLP_COOKIES_PATH") or "").strip(),
-        "cookies_path_is_set": (os.getenv("YTDLP_COOKIES_PATH") or "").strip() != "",
-        "cookies_file_exists": os.path.exists((os.getenv("YTDLP_COOKIES_PATH") or "").strip()) if (os.getenv("YTDLP_COOKIES_PATH") or "").strip() else False,
+        "cookies_path": cookies_path,
+        "cookies_path_is_set": cookies_path != "",
+        "cookies_file_exists": os.path.exists(cookies_path) if cookies_path else False,
+        "proxy_is_set": proxy != "",
     }
-
 
 
 @app.get("/download")
@@ -85,17 +98,10 @@ async def download_video(
     url: str,
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
 ):
-    """
-    Exemplo:
-      GET /download?url=https://www.youtube.com/watch?v=XXXX
-      Header: X-API-Key: <sua-chave>   (se API_KEY estiver definida no ambiente)
-    """
     _check_api_key(x_api_key)
 
     try:
-        # Em serviços como Render, /tmp existe e é o lugar certo pra temporários
         tmpdir = tempfile.mkdtemp(prefix="ytdlp_", dir="/tmp")
-
         filename = await asyncio.to_thread(_download_sync, url, tmpdir)
 
         if not filename or not os.path.exists(filename):
@@ -113,9 +119,6 @@ async def download_video(
         raise HTTPException(status_code=500, detail=f"Erro ao baixar o vídeo: {e}")
 
 
-# =========================
-# Local run (opcional)
-# =========================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("yt_api:app", host="127.0.0.1", port=8000, reload=True)
