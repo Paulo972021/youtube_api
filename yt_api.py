@@ -15,24 +15,32 @@ app = FastAPI(title="YT Download API", version="1.0.1")
 # Helpers
 # =========================
 def _download_sync(url: str, tmpdir: str) -> str:
-    """
-    Baixa o vídeo de forma síncrona (bloqueante) usando yt-dlp.
-    Retorna o caminho do arquivo final.
-    """
+    cookies_path = (os.getenv("YTDLP_COOKIES_PATH") or "").strip()
+
     ydl_opts = {
-        "format": "bestvideo+bestaudio/best",
-        "merge_output_format": "mp4",  # tenta garantir mp4 quando possível
+        "format": "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+        "merge_output_format": "mp4",
         "outtmpl": os.path.join(tmpdir, "%(title)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
-        # "restrictfilenames": True,  # opcional: evita caracteres estranhos no nome
+        "noplaylist": True,
     }
+
+    # ✅ cookies (se você estiver usando)
+    if cookies_path:
+        ydl_opts["cookiefile"] = cookies_path
+
+    # ✅ proxy (coloque exatamente aqui)
+    proxy = (os.getenv("YTDLP_PROXY") or "").strip()
+    if proxy:
+        ydl_opts["proxy"] = proxy
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
 
     return filename
+
 
 
 def _check_api_key(value: Optional[str]) -> None:
