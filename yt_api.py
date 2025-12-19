@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 
 import yt_dlp
 
-app = FastAPI(title="YT Download API", version="1.0.0")
+app = FastAPI(title="YT Download API", version="1.0.1")
 
 
 # =========================
@@ -21,12 +21,11 @@ def _download_sync(url: str, tmpdir: str) -> str:
     """
     ydl_opts = {
         "format": "bestvideo+bestaudio/best",
-        "merge_output_format": "mp4",  # tenta garantir mp4
+        "merge_output_format": "mp4",  # tenta garantir mp4 quando possível
         "outtmpl": os.path.join(tmpdir, "%(title)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
-        # Se quiser evitar nomes absurdos:
-        # "restrictfilenames": True,
+        # "restrictfilenames": True,  # opcional: evita caracteres estranhos no nome
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -36,12 +35,17 @@ def _download_sync(url: str, tmpdir: str) -> str:
     return filename
 
 
-def _check_api_key(x_api_key: Optional[str]) -> None:
+def _check_api_key(value: Optional[str]) -> None:
     """
-    Se API_KEY estiver definida no ambiente, exige header X-API-Key.
+    Se API_KEY estiver definida no ambiente (Render -> Environment),
+    exige header X-API-Key. Faz strip() para evitar erro por espaços.
     """
-    required = os.getenv("API_KEY")
-    if required and x_api_key != required:
+    required = (os.getenv("API_KEY") or "").strip()
+    if not required:
+        return  # sem API_KEY definida, não bloqueia
+
+    got = (value or "").strip()
+    if got != required:
         raise HTTPException(status_code=401, detail="Unauthorized (invalid API key).")
 
 
@@ -53,6 +57,23 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/debug-key")
+async def debug_key(
+    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+):
+    """
+    Endpoint de diagnóstico: NÃO retorna a chave.
+    Apenas indica se o header chegou e se a env API_KEY está definida no Render.
+    """
+    required = (os.getenv("API_KEY") or "")
+    return {
+        "received": x_api_key is not None,
+        "received_len": 0 if not x_api_key else len(x_api_key),
+        "required_is_set": required.strip() != "",
+        "required_len": 0 if not required else len(required.strip()),
+    }
+
+
 @app.get("/download")
 async def download_video(
     url: str,
@@ -61,7 +82,7 @@ async def download_video(
     """
     Exemplo:
       GET /download?url=https://www.youtube.com/watch?v=XXXX
-      Header opcional: X-API-Key: <sua-chave>
+      Header: X-API-Key: <sua-chave>   (se API_KEY estiver definida no ambiente)
     """
     _check_api_key(x_api_key)
 
@@ -74,7 +95,6 @@ async def download_video(
         if not filename or not os.path.exists(filename):
             raise HTTPException(status_code=500, detail="Arquivo não encontrado após download.")
 
-        # media_type pode variar; mp4 é o mais comum aqui
         return FileResponse(
             path=filename,
             media_type="video/mp4",
