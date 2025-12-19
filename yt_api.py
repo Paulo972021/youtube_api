@@ -58,20 +58,18 @@ async def health():
 
 
 @app.get("/debug-key")
-async def debug_key(
-    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-):
-    """
-    Endpoint de diagnóstico: NÃO retorna a chave.
-    Apenas indica se o header chegou e se a env API_KEY está definida no Render.
-    """
+async def debug_key(x_api_key: Optional[str] = Header(default=None, alias="X-API-Key")):
     required = (os.getenv("API_KEY") or "")
     return {
         "received": x_api_key is not None,
         "received_len": 0 if not x_api_key else len(x_api_key),
         "required_is_set": required.strip() != "",
         "required_len": 0 if not required else len(required.strip()),
+        "cookies_path": (os.getenv("YTDLP_COOKIES_PATH") or "").strip(),
+        "cookies_path_is_set": (os.getenv("YTDLP_COOKIES_PATH") or "").strip() != "",
+        "cookies_file_exists": os.path.exists((os.getenv("YTDLP_COOKIES_PATH") or "").strip()) if (os.getenv("YTDLP_COOKIES_PATH") or "").strip() else False,
     }
+
 
 
 @app.get("/download")
